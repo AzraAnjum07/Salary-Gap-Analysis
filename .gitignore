@@ -8,3 +8,4 @@ data/processed/
 .ipynb_checkpoints/
 
 outputs/
+.venv-linux/

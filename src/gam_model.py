@@ -3,6 +3,7 @@ import gc
 import json
 import os
 import time
+import uuid
 
 import numpy as np
 import pandas as pd
@@ -24,11 +25,14 @@ FEATURE_ORDER = [
     "industry",
     "occupation",
 ]
+GENDER_SMOOTH_FEATURES = ["male_indicator", "female_indicator"]
+MODEL_FEATURE_ORDER = FEATURE_ORDER + GENDER_SMOOTH_FEATURES
 
 CATEGORICAL_FEATURES = {"gender", "employment_status", "industry", "occupation"}
 CV_FOLDS = 5
 CV_MAX_ROWS = 10_000
 RANDOM_STATE = 42
+ARTIFACT_SCHEMA_VERSION = 3
 
 
 def load_and_prepare_data() -> pd.DataFrame:
@@ -48,6 +52,8 @@ def load_and_prepare_data() -> pd.DataFrame:
         model_df[column] = pd.to_numeric(model_df[column], errors="coerce")
 
     model_df = model_df[model_df["gender"].isin([1, 2])]
+    model_df["male_indicator"] = (model_df["gender"] == 1).astype(np.float32)
+    model_df["female_indicator"] = (model_df["gender"] == 2).astype(np.float32)
     return model_df.dropna().astype(np.float32, copy=False)
 
 
@@ -58,53 +64,65 @@ def make_baseline_row(reference_df: pd.DataFrame) -> np.ndarray:
             values.append(float(reference_df[feature].mode().iloc[0]))
         else:
             values.append(float(reference_df[feature].median()))
+    gender_value = float(reference_df["gender"].mode().iloc[0])
+    values.extend([float(gender_value == 1), float(gender_value == 2)])
     return np.asarray(values, dtype=float)
 
 
-def save_gam_effects(gam: LinearGAM, reference_df: pd.DataFrame) -> Path:
+def save_gam_effects(gam: LinearGAM, reference_df: pd.DataFrame, run_id: str) -> Path:
     baseline = make_baseline_row(reference_df)
     effect_rows = []
 
-    smooth_features = {0: "Age", 1: "Formal education years"}
-    for term_index, feature_name in smooth_features.items():
-        feature = FEATURE_ORDER[term_index]
+    smooth_features = {
+        "Age": [(0, "Male"), (1, "Female")],
+        "Formal education years": [(2, "Male"), (3, "Female")],
+    }
+    for feature_name, smooth_terms in smooth_features.items():
+        feature_index = 0 if feature_name == "Age" else 1
+        feature = FEATURE_ORDER[feature_index]
         values = np.linspace(
             reference_df[feature].quantile(0.01),
             reference_df[feature].quantile(0.99),
             100,
         )
-        grid = np.tile(baseline, (len(values), 1))
-        grid[:, term_index] = values
-
-        effect, confidence = gam.partial_dependence(
-            term=term_index, X=grid, width=0.95
-        )
-
-        for value, effect_value, lower, upper in zip(
-            values, effect, confidence[:, 0], confidence[:, 1]
-        ):
-            effect_rows.append(
-                {
-                    "feature": feature_name,
-                    "value": float(value),
-                    "effect": float(effect_value),
-                    "lower": float(lower),
-                    "upper": float(upper),
-                }
+        for term_index, gender_label in smooth_terms:
+            grid = np.tile(baseline, (len(values), 1))
+            grid[:, feature_index] = values
+            grid[:, FEATURE_ORDER.index("gender")] = 1 if gender_label == "Male" else 2
+            grid[:, len(FEATURE_ORDER)] = float(gender_label == "Male")
+            grid[:, len(FEATURE_ORDER) + 1] = float(gender_label == "Female")
+            effect, confidence = gam.partial_dependence(
+                term=term_index, X=grid, width=0.95
             )
 
+            for value, estimate, lower, upper in zip(
+                values, effect, confidence[:, 0], confidence[:, 1]
+            ):
+                effect_rows.append(
+                    {
+                        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+                        "run_id": run_id,
+                        "feature": feature_name,
+                        "value": float(value),
+                        "effect": float(estimate),
+                        "lower": float(lower),
+                        "upper": float(upper),
+                        "gender_label": gender_label,
+                    }
+                )
+
     factor_features = {
-        2: "Gender",
-        3: "Employment status",
-        4: "Industry",
-        5: "Occupation",
+        4: (2, "Gender"),
+        5: (3, "Employment status"),
+        6: (4, "Industry"),
+        7: (5, "Occupation"),
     }
 
-    for term_index, feature_name in factor_features.items():
-        feature = FEATURE_ORDER[term_index]
+    for term_index, (feature_index, feature_name) in factor_features.items():
+        feature = FEATURE_ORDER[feature_index]
         values = np.sort(reference_df[feature].unique())
         grid = np.tile(baseline, (len(values), 1))
-        grid[:, term_index] = values
+        grid[:, feature_index] = values
 
         effect, confidence = gam.partial_dependence(
             term=term_index, X=grid, width=0.95
@@ -115,11 +133,14 @@ def save_gam_effects(gam: LinearGAM, reference_df: pd.DataFrame) -> Path:
         ):
             effect_rows.append(
                 {
+                    "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+                    "run_id": run_id,
                     "feature": feature_name,
                     "value": float(value),
                     "effect": float(effect_value),
                     "lower": float(lower),
                     "upper": float(upper),
+                    "gender_label": "",
                 }
             )
 
@@ -128,14 +149,18 @@ def save_gam_effects(gam: LinearGAM, reference_df: pd.DataFrame) -> Path:
     return temporary_path
 
 
-def save_gender_predictions(gam: LinearGAM, reference_df: pd.DataFrame) -> Path:
+def save_gender_predictions(gam: LinearGAM, reference_df: pd.DataFrame, run_id: str) -> Path:
     baseline = make_baseline_row(reference_df)
     gender_grid = np.tile(baseline, (2, 1))
     gender_grid[:, FEATURE_ORDER.index("gender")] = [1, 2]
+    gender_grid[:, len(FEATURE_ORDER)] = [1, 0]
+    gender_grid[:, len(FEATURE_ORDER) + 1] = [0, 1]
     predictions = gam.predict(gender_grid)
     temporary_path = OUTPUT_DIR / "gam_gender_predictions.csv.tmp"
     predictions_df = pd.DataFrame(
         {
+            "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+            "run_id": run_id,
             "gender": [1, 2],
             "gender_label": ["Male", "Female"],
             "predicted_earnings": predictions,
@@ -146,10 +171,12 @@ def save_gender_predictions(gam: LinearGAM, reference_df: pd.DataFrame) -> Path:
 
 
 def build_gam() -> LinearGAM:
-    """Create the GAM specification used consistently for CV and final fitting."""
+    """Create additive gender-specific smooths plus the existing factor terms."""
     return LinearGAM(
-        s(0, n_splines=18)
-        + s(1, n_splines=18)
+        s(0, by=6, n_splines=18)
+        + s(0, by=7, n_splines=18)
+        + s(1, by=6, n_splines=18)
+        + s(1, by=7, n_splines=18)
         + f(2)
         + f(3)
         + f(4)
@@ -245,7 +272,7 @@ def train_and_evaluate_gam(model_df: pd.DataFrame) -> dict:
     reserved test rows. Predictions are evaluation tools; the project's goal is
     interpreting adjusted earnings associations and gender differences.
     """
-    X = model_df[FEATURE_ORDER]
+    X = model_df[MODEL_FEATURE_ORDER]
     y = model_df["earnings"]
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -277,7 +304,14 @@ def train_and_evaluate_gam(model_df: pd.DataFrame) -> dict:
     print("Final test prediction completed.", flush=True)
     baseline_pred = np.full(len(y_test), y_train.mean())
 
+    run_id = uuid.uuid4().hex
     metrics = {
+        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+        "run_id": run_id,
+        "response_scale": "raw_earnings_in_rupees",
+        "effect_interval": "pyGAM 95% confidence interval",
+        "model_terms": "s(age, by=male_indicator) + s(age, by=female_indicator) + s(formal_education_years, by=male_indicator) + s(formal_education_years, by=female_indicator) + f(gender) + f(employment_status) + f(industry) + f(occupation)",
+        "effect_baseline": "training medians for numeric features and training modes for categorical features",
         "validation_method": "5-fold cross-validation on the 80% training partition",
         "test_split": 0.2,
         "random_state": RANDOM_STATE,
@@ -291,13 +325,13 @@ def train_and_evaluate_gam(model_df: pd.DataFrame) -> dict:
         "baseline_rmse": float(np.sqrt(mean_squared_error(y_test, baseline_pred))),
         "baseline_mae": float(mean_absolute_error(y_test, baseline_pred)),
         "baseline_r2": float(r2_score(y_test, baseline_pred)),
-        "feature_order": FEATURE_ORDER,
+        "feature_order": MODEL_FEATURE_ORDER,
     }
 
     # Build all new artifacts before replacing existing outputs. If the process
     # is killed by WSL, the previous valid metrics/effects remain untouched.
-    effects_temporary_path = save_gam_effects(gam, X_train)
-    gender_temporary_path = save_gender_predictions(gam, X_train)
+    effects_temporary_path = save_gam_effects(gam, X_train, run_id)
+    gender_temporary_path = save_gender_predictions(gam, X_train, run_id)
     metrics_temporary_path = OUTPUT_DIR / "gam_metrics.json.tmp"
     with open(metrics_temporary_path, "w", encoding="utf-8") as metrics_file:
         json.dump(metrics, metrics_file, indent=2)

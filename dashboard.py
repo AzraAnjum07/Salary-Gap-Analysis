@@ -13,17 +13,32 @@ METRICS_PATH = BASE_DIR / "outputs" / "gam_metrics.json"
 EFFECTS_PATH = BASE_DIR / "outputs" / "gam_effects.csv"
 GENDER_PREDICTIONS_PATH = BASE_DIR / "outputs" / "gam_gender_predictions.csv"
 
-INDUSTRY_BROAD_LABELS = {
-    1: "Agriculture, forestry and fishing",
-    2: "Mining and quarrying",
-    3: "Manufacturing",
-    4: "Electricity, gas and water",
-    5: "Construction",
-    6: "Trade and repair",
-    7: "Transport and storage",
-    8: "Accommodation and food services",
-    9: "Information and communication",
-}
+# Four-digit values are NIC-2008 industry classes. Their first two digits
+# identify the division, which maps to an official NIC-2008 section.
+# Source: MoSPI, NIC 2008 Codes & Descriptions.
+INDUSTRY_SECTION_RANGES = [
+    (1, 3, "Agriculture, forestry and fishing"),
+    (5, 9, "Mining and quarrying"),
+    (10, 33, "Manufacturing"),
+    (35, 35, "Electricity, gas, steam and air conditioning"),
+    (36, 39, "Water supply, sewerage and waste management"),
+    (41, 43, "Construction"),
+    (45, 47, "Wholesale and retail trade; vehicle repair"),
+    (49, 53, "Transportation and storage"),
+    (55, 56, "Accommodation and food services"),
+    (58, 63, "Information and communication"),
+    (64, 66, "Financial and insurance activities"),
+    (68, 68, "Real estate activities"),
+    (69, 75, "Professional, scientific and technical activities"),
+    (77, 82, "Administrative and support services"),
+    (84, 84, "Public administration and defence"),
+    (85, 85, "Education"),
+    (86, 88, "Human health and social work"),
+    (90, 93, "Arts, entertainment and recreation"),
+    (94, 96, "Other service activities"),
+    (97, 98, "Household employment and own-use production"),
+    (99, 99, "Activities of extraterritorial organizations"),
+]
 
 OCCUPATION_BROAD_LABELS = {
     0: "Armed forces",
@@ -111,11 +126,43 @@ def load_gender_predictions():
     return pd.read_csv(GENDER_PREDICTIONS_PATH)
 
 
+@st.cache_data
+def load_training_baseline_and_category_counts():
+    """Recreate the GAM training split to get its exact baseline and weights."""
+    from sklearn.model_selection import train_test_split
+
+    features = [
+        "age", "formal_education_years", "gender", "employment_status",
+        "industry", "occupation", "earnings",
+    ]
+    model_data = df[features].copy()
+    for column in features:
+        model_data[column] = pd.to_numeric(model_data[column], errors="coerce")
+    model_data = model_data[model_data["gender"].isin([1, 2])].dropna()
+    X_train, _, _, _ = train_test_split(
+        model_data[features[:-1]], model_data["earnings"],
+        test_size=0.2, random_state=42,
+    )
+
+    baseline = {}
+    for feature in features[:-1]:
+        if feature in {"gender", "employment_status", "industry", "occupation"}:
+            baseline[feature] = float(X_train[feature].mode().iloc[0])
+        else:
+            baseline[feature] = float(X_train[feature].median())
+    counts = {
+        feature: X_train[feature].value_counts().to_dict()
+        for feature in ["employment_status", "industry", "occupation"]
+    }
+    return baseline, counts
+
+
 df = load_data()
 metrics = load_metrics()
 effects = load_effects()
 gender_predictions = load_gender_predictions()
 mappings = load_mappings()
+training_baseline, training_category_counts = load_training_baseline_and_category_counts()
 
 st.sidebar.header("Filters")
 all_genders = [gender for gender in ["Male", "Female"] if gender in df["gender_label"].unique()]
@@ -131,7 +178,10 @@ def finish_axes(ax):
 
 def show_chart(fig, explanation):
     st.pyplot(fig)
-    st.caption(explanation)
+    if isinstance(explanation, (list, tuple)):
+        st.markdown("\n".join(f"- {item}" for item in explanation))
+    else:
+        st.caption(explanation)
     plt.close(fig)
 
 
@@ -140,18 +190,218 @@ def readable_effect_label(feature, value, label_maps, index):
     exact_label = label_maps.get(str(code))
     if exact_label:
         return exact_label
-    if feature == "Industry":
-        broad_label = INDUSTRY_BROAD_LABELS.get(int(str(code)[0]), "Other industry sector")
-    else:
+    if feature == "Occupation":
         broad_label = OCCUPATION_BROAD_LABELS.get(code // 100, "Other occupation")
-    return f"{broad_label} subgroup {index + 1}"
+        return broad_label
+    return "Other industry category (label unavailable)"
 
 
 def broad_effect_label(feature, value):
     code = int(value)
-    if feature == "Industry":
-        return INDUSTRY_BROAD_LABELS.get(int(str(code)[0]), "Other industry sector")
     return OCCUPATION_BROAD_LABELS.get(code // 100, "Other occupation")
+
+
+def industry_section_label(value):
+    # The clean CSV stores NIC codes as numbers, so a leading zero can be lost
+    # (for example, 01111 becomes 1111). Restore the five-digit format first.
+    division = int(str(int(value)).zfill(5)[:2])
+    for first_division, last_division, label in INDUSTRY_SECTION_RANGES:
+        if first_division <= division <= last_division:
+            return label
+    return "Other / unclassified industry code"
+
+
+def summarize_smooth_effect(feature_df, feature, gender_label):
+    feature_df = feature_df.sort_values("value").reset_index(drop=True)
+    x = feature_df["value"].to_numpy(dtype=float)
+    estimate = feature_df["effect"].to_numpy(dtype=float)
+    lower = feature_df["lower"].to_numpy(dtype=float)
+    upper = feature_df["upper"].to_numpy(dtype=float)
+    smoothed = pd.Series(estimate).rolling(
+        window=nine_point_window(len(estimate)), center=True, min_periods=1
+    ).mean().to_numpy()
+    slopes = np.gradient(smoothed, x)
+    slope_scale = np.nanpercentile(np.abs(slopes), 75)
+    tolerance = max(slope_scale * 0.12, 1e-8)
+    directions = np.where(slopes > tolerance, 1, np.where(slopes < -tolerance, -1, 0))
+
+    runs = []
+    run_start = 0
+    for index in range(1, len(directions) + 1):
+        if index == len(directions) or directions[index] != directions[run_start]:
+            runs.append((int(directions[run_start]), run_start, index - 1))
+            run_start = index
+
+    min_run = max(5, int(len(x) * 0.06))
+    substantial_runs = [run for run in runs if run[2] - run[1] + 1 >= min_run]
+    merged_runs = []
+    for direction, start, end in substantial_runs:
+        if merged_runs and merged_runs[-1][0] == direction:
+            merged_runs[-1] = (direction, merged_runs[-1][1], end)
+        else:
+            merged_runs.append((direction, start, end))
+    substantial_runs = merged_runs
+    trend_names = {1: "increases", -1: "decreases", 0: "is relatively flat"}
+    if substantial_runs:
+        trend = "; then ".join(
+            f"{trend_names[direction]} from about {x[start]:.1f} to {x[end]:.1f}"
+            for direction, start, end in substantial_runs[:4]
+        )
+    else:
+        net_change = smoothed[-1] - smoothed[0]
+        trend = "is broadly flat" if abs(net_change) <= slope_scale * (x[-1] - x[0]) * 0.1 else (
+            "generally increases" if net_change > 0 else "generally decreases"
+        )
+
+    turning_points = []
+    for first, second in zip(substantial_runs, substantial_runs[1:]):
+        if first[0] * second[0] < 0:
+            turn_index = first[2]
+            turning_points.append(f"a change in direction near {x[turn_index]:.1f}")
+    turning_text = (
+        " The estimated curve changes direction, with " + " and ".join(turning_points[:2]) + "."
+        if turning_points
+        else " No clear turning point is identified by the smoothed curve."
+    )
+
+    median_band_width = float(np.median(upper - lower))
+    widest_index = int(np.argmax(upper - lower))
+    band_text = (
+        f" The shaded region is pyGAM's pointwise 95% confidence interval for the smooth term contribution; "
+        f"its median width is ₹{median_band_width:,.0f}, and it is widest near {x[widest_index]:.1f}. "
+        "A wider interval indicates greater uncertainty in that part of the curve."
+    )
+    x_description = "age in years" if feature == "Age" else "completed years of formal education"
+    return (
+        f"{gender_label}: {trend}; contribution ranges ₹{estimate.min():,.0f} to ₹{estimate.max():,.0f}.",
+        f"{gender_label} 95% band: median width ₹{median_band_width:,.0f}; widest near {x[widest_index]:.1f}.",
+        turning_text.strip(),
+    )
+
+
+def summarize_gender_smooths(feature_df, feature):
+    curves = {
+        gender: feature_df[feature_df["gender_label"] == gender].sort_values("value")
+        for gender in ["Male", "Female"]
+    }
+    if any(curve.empty for curve in curves.values()):
+        return "Gender-specific curves are missing from the saved GAM effects. Rerun the GAM script to generate the interaction-model output."
+
+    male_curve = curves["Male"].set_index("value")
+    female_curve = curves["Female"].set_index("value")
+    shared_x = male_curve.index.intersection(female_curve.index)
+    male_minus_female = (
+        male_curve.loc[shared_x, "effect"] - female_curve.loc[shared_x, "effect"]
+    )
+    average_difference = float(male_minus_female.mean())
+    direction = "higher" if average_difference >= 0 else "lower"
+    x_description = "age in years" if feature == "Age" else "years of formal education"
+    male_summary, male_uncertainty, male_turning = summarize_smooth_effect(
+        curves["Male"], feature, "Male"
+    )
+    female_summary, female_uncertainty, female_turning = summarize_smooth_effect(
+        curves["Female"], feature, "Female"
+    )
+    return [
+        f"Axes: X = {x_description} (increases left to right); Y = gender-specific partial contribution to modeled earnings (₹).",
+        "Zero line: no contribution from this smooth term; above zero adds to, below zero subtracts from the modeled estimate.",
+        f"{male_summary} {male_turning} {male_uncertainty}",
+        f"{female_summary} {female_turning} {female_uncertainty}",
+        f"With other variables held at baseline, the Male smooth contribution averages ₹{abs(average_difference):,.0f} {direction} than Female. This is the smooth-term difference, not the full earnings gap or a causal effect.",
+    ]
+
+
+def nine_point_window(length):
+    """Return an odd smoothing window no larger than the available curve."""
+    return max(1, min(9, length if length % 2 else length - 1))
+
+
+def gender_category_profiles(feature_df, feature, gender_predictions):
+    """Create baseline-adjusted category profiles from additive GAM terms."""
+    feature_column = {
+        "Employment status": "employment_status",
+        "Industry": "industry",
+        "Occupation": "occupation",
+    }[feature]
+    detail = feature_df.copy()
+    mapping = mappings.get(feature_column, {})
+    if feature == "Industry":
+        detail["display_label"] = detail["value"].map(industry_section_label)
+        grouped = True
+    elif feature == "Occupation":
+        detail["display_label"] = detail["value"].map(lambda value: broad_effect_label(feature, value))
+        grouped = True
+    else:
+        detail["display_label"] = [
+            readable_effect_label(feature, value, mapping, index)
+            for index, value in enumerate(detail["value"])
+        ]
+        grouped = False
+
+    if grouped:
+        counts = training_category_counts[feature_column]
+        detail["training_count"] = detail["value"].map(
+            lambda value: counts.get(value, counts.get(int(value), 0))
+        )
+        display_rows = []
+        for label, group in detail.groupby("display_label", sort=False):
+            weights = group["training_count"].to_numpy(dtype=float)
+            display_rows.append({
+                "display_label": label,
+                "effect": float(np.average(group["effect"], weights=weights)),
+                "weight": float(weights.sum()),
+            })
+        display = pd.DataFrame(display_rows)
+        if feature == "Industry":
+            order = [label for _, _, label in INDUSTRY_SECTION_RANGES]
+        else:
+            order = [OCCUPATION_BROAD_LABELS[index] for index in sorted(OCCUPATION_BROAD_LABELS)]
+        display["display_label"] = pd.Categorical(display["display_label"], categories=order, ordered=True)
+        display = display.sort_values("display_label")
+    else:
+        display = detail[["display_label", "value", "effect"]].copy()
+        display["weight"] = 1.0
+
+    baseline_value = training_baseline[feature_column]
+    baseline_effect = float(detail.loc[np.isclose(detail["value"], baseline_value), "effect"].iloc[0])
+    prediction_by_gender = gender_predictions.set_index("gender_label")["predicted_earnings"]
+    rows = []
+    for _, item in display.iterrows():
+        contribution_delta = float(item["effect"] - baseline_effect)
+        for gender in ["Male", "Female"]:
+            rows.append({
+                "display_label": str(item["display_label"]),
+                "gender_label": gender,
+                "predicted_earnings": float(prediction_by_gender[gender] + contribution_delta),
+            })
+    return pd.DataFrame(rows), grouped
+
+
+def summarize_gender_category_profiles(profiles, feature, grouped):
+    male = profiles[profiles["gender_label"] == "Male"]
+    female = profiles[profiles["gender_label"] == "Female"]
+    male_high = male.loc[male["predicted_earnings"].idxmax()]
+    female_high = female.loc[female["predicted_earnings"].idxmax()]
+    differences = male.set_index("display_label")["predicted_earnings"] - female.set_index("display_label")["predicted_earnings"]
+    average_gap = float(differences.mean())
+    if feature == "Industry":
+        grouping_text = "Four- and five-digit NIC codes are restored to their five-digit form and grouped into official NIC-2008 sections; group estimates are weighted by training-category counts."
+    elif feature == "Occupation":
+        grouping_text = "Occupation codes are grouped into NCO major groups; group estimates are weighted by training-category counts."
+    else:
+        grouping_text = "Employment statuses are shown in code order with readable labels."
+    category_axis = {
+        "Industry": "NIC-2008 industry section",
+        "Occupation": "NCO major group",
+        "Employment status": "employment-status category",
+    }[feature]
+    return [
+        f"Axes: X = adjusted GAM earnings estimate (₹); Y = {category_axis}. The legend identifies Male and Female.",
+        f"Highest displayed estimates: Male, {male_high['display_label']} (₹{male_high['predicted_earnings']:,.0f}); Female, {female_high['display_label']} (₹{female_high['predicted_earnings']:,.0f}).",
+        f"Mean Male-minus-Female difference across displayed categories: ₹{abs(average_gap):,.0f} at this constructed baseline. {grouping_text}",
+        "These are complete adjusted profile estimates, not partial effects or observed group averages. No confidence interval is shown for these derived profiles.",
+        "The model has a shared category term and no gender-by-category interaction. Paired points show each gender's fitted level; they do not imply that the category association itself differs by gender. This is not causal.",
+    ]
 
 with st.sidebar:
     st.markdown("---")
@@ -385,15 +635,50 @@ with tabs[1]:
 
 with tabs[2]:
     st.subheader("GAM model evaluation")
-    st.info(
-        "**What is a GAM?** A Generalized Additive Model estimates earnings as the sum of separate contributions from age, education, gender, employment status, industry, and occupation. "
-        "It is used here because age and education may have curved rather than straight-line relationships with earnings. "
-        "The GAM graphs show one variable's contribution while the other variables are held at typical values. "
-        "The horizontal zero line is the model reference: bars above it raise the predicted earnings estimate, while bars below it lower that estimate. "
-        "These are adjusted associations, not proof that a variable causes the difference."
+    artifacts_have_schema = bool(
+        metrics
+        and metrics.get("artifact_schema_version") == 3
+        and metrics.get("response_scale") == "raw_earnings_in_rupees"
+        and metrics.get("model_terms") == (
+            "s(age, by=male_indicator) + s(age, by=female_indicator) + "
+            "s(formal_education_years, by=male_indicator) + "
+            "s(formal_education_years, by=female_indicator) + f(gender) + "
+            "f(employment_status) + f(industry) + f(occupation)"
+        )
+        and effects is not None
+        and not effects.empty
+        and "artifact_schema_version" in effects.columns
+        and effects["artifact_schema_version"].eq(3).all()
+        and gender_predictions is not None
+        and "artifact_schema_version" in gender_predictions.columns
+        and gender_predictions["artifact_schema_version"].eq(3).all()
     )
-    if metrics is None:
-        st.warning("GAM metrics are not available. Run `python src/gam_model.py` and refresh this page.")
+    run_id_fields = [
+        bool(metrics and "run_id" in metrics),
+        bool(effects is not None and "run_id" in effects.columns),
+        bool(gender_predictions is not None and "run_id" in gender_predictions.columns),
+    ]
+    artifacts_have_run_ids = all(run_id_fields)
+    artifacts_verified = artifacts_have_schema and (
+        not any(run_id_fields)
+        or (
+            artifacts_have_run_ids
+            and effects["run_id"].eq(metrics["run_id"]).all()
+            and gender_predictions["run_id"].eq(metrics["run_id"]).all()
+        )
+    )
+    st.markdown(
+        "**GAM at a glance**\n"
+        "- Shows adjusted earnings associations; it does not predict individual salaries.\n"
+        "- Age and education each have separate Male and Female curves.\n"
+        "- Effects use raw earnings in rupees; zero means no contribution from that term.\n"
+        "- Curves are associations, not proof of cause."
+    )
+    if not artifacts_verified:
+        st.warning(
+            "The saved GAM outputs predate the current artifact metadata and cannot be verified as products of the current validation workflow. "
+            "They are hidden here. Run `python src/gam_model.py` to complete the full training fit and generate verified metrics and effects."
+        )
     else:
         has_cv_metrics = "cv_r2_mean" in metrics
         if not has_cv_metrics:
@@ -435,15 +720,11 @@ with tabs[2]:
                 "R² is the share of test-set earnings variation explained by the model; it is not a causal estimate."
             )
 
-    if effects is None or effects.empty:
-        st.warning("GAM effect data is not available. Run `python src/gam_model.py` and refresh this page.")
+    if not artifacts_verified or effects is None or effects.empty:
+        if artifacts_verified:
+            st.warning("GAM effect data is not available. Run `python src/gam_model.py` and refresh this page.")
     else:
         st.subheader("GAM effect curves")
-        st.markdown(
-            "These curves show each variable's **partial effect on predicted earnings**, in rupees, while the other variables are held at typical values. "
-            "The zero line is the model's reference level: a negative effect means lower predicted earnings than that reference, not negative salary. "
-            "The shaded band is a 95% confidence interval. Category codes are converted to readable labels where mappings are available."
-        )
         feature_order = ["Age", "Formal education years", "Gender", "Employment status", "Industry", "Occupation"]
         available_features = [feature for feature in feature_order if feature in effects["feature"].unique()]
         st.caption(f"Loaded effect curves: {', '.join(available_features)}")
@@ -454,11 +735,40 @@ with tabs[2]:
 
             fig, ax = plt.subplots(figsize=(8, 4.5))
             if feature in ["Age", "Formal education years"]:
-                ax.plot(feature_df["value"], feature_df["effect"], color="#0d6efd", linewidth=2)
-                ax.fill_between(feature_df["value"], feature_df["lower"], feature_df["upper"], alpha=0.2)
-                ax.set_title(f"{feature} effect")
-                ax.set_xlabel(feature)
-                ax.set_ylabel("Partial effect")
+                if "gender_label" not in feature_df.columns:
+                    st.warning("Saved smooth curves predate gender-specific fitting. Rerun `python src/gam_model.py` to generate separate Male and Female curves.")
+                    plt.close(fig)
+                    continue
+                colors = {"Male": "#2563eb", "Female": "#e76f51"}
+                line_styles = {"Male": "-", "Female": "--"}
+                for gender_label in ["Male", "Female"]:
+                    gender_curve = feature_df[feature_df["gender_label"] == gender_label].sort_values("value")
+                    if gender_curve.empty:
+                        continue
+                    ax.plot(
+                        gender_curve["value"],
+                        gender_curve["effect"],
+                        color=colors[gender_label],
+                        linestyle=line_styles[gender_label],
+                        linewidth=2.2,
+                        label=gender_label,
+                    )
+                    ax.fill_between(
+                        gender_curve["value"],
+                        gender_curve["lower"],
+                        gender_curve["upper"],
+                        color=colors[gender_label],
+                        alpha=0.16,
+                    )
+                x_label = "Age (years)" if feature == "Age" else "Years of Formal Education"
+                ax.set_title(f"Adjusted GAM {feature} Smooth by Gender")
+                ax.set_xlabel(x_label)
+                ax.set_ylabel("Partial Effect on Modeled Earnings (₹)")
+                ax.legend(title="Gender")
+                ax.axhline(0, color="black", linewidth=0.8, alpha=0.7)
+                finish_axes(ax)
+                show_chart(fig, summarize_gender_smooths(feature_df, feature))
+                continue
             else:
                 if feature == "Gender":
                     if gender_predictions is None:
@@ -478,70 +788,53 @@ with tabs[2]:
                     )
                     ax.set_title("Adjusted predicted earnings by gender")
                     ax.set_xlabel("Gender")
-                    ax.set_ylabel("Predicted earnings (₹)")
+                    ax.set_ylabel("Adjusted Earnings Estimate (₹)")
                     for index, value in enumerate(gender_prediction_data["predicted_earnings"]):
                         ax.text(index, value, f"₹{value:,.0f}", ha="center", va="bottom")
-                    ax.axhline(0, color="black", linewidth=0.8, alpha=0.7)
                     finish_axes(ax)
                     show_chart(
                         fig,
-                        "X-axis: gender. Y-axis: predicted earnings in rupees for a typical worker with other variables held at their reference values. This is an adjusted comparison, not a raw group average.",
+                        [
+                            "X-axis: gender. Y-axis: GAM-fitted earnings estimate in rupees for a typical baseline profile.",
+                            f"Male: ₹{gender_prediction_data.iloc[0]['predicted_earnings']:,.0f}; Female: ₹{gender_prediction_data.iloc[1]['predicted_earnings']:,.0f}.",
+                            f"Difference at this baseline: ₹{abs(gender_prediction_data.iloc[0]['predicted_earnings'] - gender_prediction_data.iloc[1]['predicted_earnings']):,.0f}. This is adjusted, not a raw group average.",
+                            "Other variables are held at training baseline values. This comparison is not causal; no confidence interval is shown.",
+                        ],
                     )
                     continue
-                if feature in ["Industry", "Occupation"]:
-                    feature_df = feature_df.copy()
-                    feature_df["category_label"] = feature_df["value"].map(
-                        lambda value: broad_effect_label(feature, value)
-                    )
-                    feature_df = (
-                        feature_df.groupby("category_label", as_index=False)[
-                            ["effect", "lower", "upper"]
-                        ]
-                        .mean()
-                        .sort_values("effect")
-                    )
-                effect_mapping_names = {
-                    "Gender": "gender",
-                    "Employment status": "employment_status",
-                    "Industry": "industry",
-                    "Occupation": "occupation",
-                }
-                label_maps = mappings.get(effect_mapping_names.get(feature, ""), {})
-                if feature in ["Industry", "Occupation"]:
-                    category_labels = feature_df["category_label"].tolist()
-                else:
-                    category_labels = [
-                        readable_effect_label(feature, value, label_maps, index)
-                        for index, value in enumerate(feature_df["value"])
-                    ]
-                if feature in ["Industry", "Occupation"]:
-                    ax.barh(category_labels, feature_df["effect"], color="#ff7f0e")
-                    ax.set_xlabel("Partial effect")
-                    ax.set_ylabel(feature)
-                    ax.grid(axis="x", alpha=0.25)
-                else:
-                    ax.bar(category_labels, feature_df["effect"], color="#ff7f0e")
-                    ax.set_xlabel(feature)
-                    ax.set_ylabel("Partial effect")
-                    ax.tick_params(axis="x", rotation=45)
-                ax.set_title(f"{feature} effect")
-            ax.axhline(0, color="black", linewidth=0.8, alpha=0.7)
-            finish_axes(ax)
-            if feature == "Gender":
-                explanation = (
-                    "X-axis: gender. Y-axis: adjusted predicted earnings in rupees for a typical worker. "
-                    "This compares model predictions after holding the other variables at their reference values."
+                profiles, grouped_categories = gender_category_profiles(
+                    feature_df, feature, gender_predictions
                 )
-            else:
-                explanation = (
-                    f"X-axis: {feature.lower()}. Y-axis: partial effect on predicted earnings in rupees. "
-                    "Positive values indicate a higher model estimate than the reference level; negative values indicate a lower estimate. "
-                    "Industry and occupation show the 15 strongest effects for readability."
-                )
-            show_chart(
-                fig,
-                explanation,
-            )
+                category_labels = profiles["display_label"].drop_duplicates().tolist()
+                fig.set_size_inches(10, max(4.8, 0.42 * len(category_labels) + 1.7))
+                positions = {label: index for index, label in enumerate(category_labels)}
+                colors = {"Male": "#2563eb", "Female": "#e76f51"}
+                offsets = {"Male": -0.14, "Female": 0.14}
+                male_estimates = profiles[profiles["gender_label"] == "Male"].set_index("display_label")
+                female_estimates = profiles[profiles["gender_label"] == "Female"].set_index("display_label")
+                for label in category_labels:
+                    ax.plot(
+                        [male_estimates.loc[label, "predicted_earnings"], female_estimates.loc[label, "predicted_earnings"]],
+                        [positions[label], positions[label]],
+                        color="#9aa3ad", linewidth=1, alpha=0.65, zorder=1,
+                    )
+                for gender in ["Male", "Female"]:
+                    gender_profiles = profiles[profiles["gender_label"] == gender]
+                    ax.scatter(
+                        gender_profiles["predicted_earnings"],
+                        [positions[label] + offsets[gender] for label in gender_profiles["display_label"]],
+                        color=colors[gender], s=58, label=gender, zorder=2,
+                    )
+                ax.set_yticks(list(positions.values()), labels=category_labels)
+                ax.set_xlabel("Adjusted Modeled Earnings (₹)")
+                ax.set_ylabel("NIC-2008 industry section" if feature == "Industry" else "NCO major group" if feature == "Occupation" else "Employment status")
+                title_feature = "NIC-2008 Industry Section" if feature == "Industry" else "Occupation Major Group" if feature == "Occupation" else feature
+                ax.set_title(f"Adjusted Earnings Profiles by {title_feature} and Gender")
+                ax.legend(title="Gender")
+                ax.grid(axis="x", alpha=0.25)
+                finish_axes(ax)
+                show_chart(fig, summarize_gender_category_profiles(profiles, feature, grouped_categories))
+                continue
 
     st.markdown("---")
     st.markdown(

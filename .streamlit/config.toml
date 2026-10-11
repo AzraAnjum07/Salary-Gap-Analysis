@@ -1,0 +1,19 @@
+[theme]
+base = "light"
+primaryColor = "#287D78"
+
+[theme.light]
+backgroundColor = "#F7F5F0"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#172B4D"
+primaryColor = "#287D78"
+borderColor = "#D9EAE5"
+chartCategoricalColors = ["#287D78", "#E07A5F", "#4C78A8", "#F2A541", "#8E6C8A"]
+
+[theme.dark]
+backgroundColor = "#101820"
+secondaryBackgroundColor = "#1B2732"
+textColor = "#EAF0F5"
+primaryColor = "#62C7B5"
+borderColor = "#3A4A57"
+chartCategoricalColors = ["#62C7B5", "#F08A70", "#8FB8E8", "#F2BD68", "#C19AC9"]

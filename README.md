@@ -37,9 +37,11 @@ python -m streamlit run dashboard.py
 
 To stop the dashboard, press `Ctrl+C` in the terminal.
 
-## Use the original PLFS data
+## PLFS data and reproducibility
 
-The raw PLFS file and prepared data are not included in this repository. The raw data is ignored by Git. If you have authorized access to the PLFS 2023–24 file, place `perv1.csv` in `data/raw/`, then run the cells in `notebooks/01_data_preparation.ipynb`. That notebook creates the prepared files used by the original-data dashboard.
+The dashboard's PLFS view uses the included cleaned analysis file (`data/processed/clean_earners.csv`), readable code labels (`data/processed/mappings.json`), and the matching GAM outputs in `outputs/`. This lets the hosted app show the same PLFS analysis without rerunning the model at startup.
+
+The original raw microdata file is not included. It is available through the [official MoSPI PLFS 2023–24 catalog](https://microdata.gov.in/NADA/index.php/catalog/213), which requires an account to access the data. If you have authorized access to that file, place `perv1.csv` in `data/raw/` and run the cells in `notebooks/01_data_preparation.ipynb` to recreate the prepared files.
 
 To generate the GAM evaluation and graph data, run:
 
@@ -47,7 +49,13 @@ To generate the GAM evaluation and graph data, run:
 python src/gam_model.py
 ```
 
-The full model fit may take several minutes and needs enough memory. Once preparation and model generation finish, run the dashboard as shown above. Without those local data and model files, use **Upload Custom Dataset** to explore a CSV.
+The full model fit may take several minutes and needs enough memory. It rewrites the GAM results used by the dashboard. The existing prepared PLFS file and matching model results are already included, so you can run the dashboard directly after installing the requirements.
+
+## Deploy
+
+The app entry point is `dashboard.py`. Deploy that file from the `main` branch on Streamlit Community Cloud. The cleaned PLFS analysis file and matching GAM outputs are included in the repository, so both the original PLFS view and custom CSV upload are available after deployment.
+
+The app supports Streamlit's light and dark themes. Use the app menu's **Settings → Theme** to switch.
 
 ## Try the upload with sample data
 
@@ -69,8 +77,10 @@ The original-data GAM script reserves 20% of the prepared sample for a final tes
 │   ├── gam_model.py
 │   └── upload_dashboard.py
 ├── data/
-│   └── synthetic/
+│   ├── processed/       # cleaned PLFS analysis data and label mappings
+│   └── synthetic/       # artificial CSV for testing uploads
+├── outputs/             # matching GAM metrics and effect data
 └── requirements.txt
 ```
 
-Raw and processed PLFS files, generated model outputs, and virtual environments are kept out of Git. If deploying the app publicly, remember that uploaded files are handled by the hosted app; don't upload confidential company or personal data unless the hosting and access setup is appropriate.
+The raw PLFS source file and virtual environments are kept out of Git. If deploying the app publicly, remember that uploaded files are handled by the hosted app; don't upload confidential company or personal data unless the hosting and access setup is appropriate.

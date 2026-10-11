@@ -59,12 +59,12 @@ st.set_page_config(page_title="Salary Gap Dashboard", layout="wide")
 st.markdown(
     """
     <style>
-        .stApp { background: #F7F5F0; color: #172B4D; }
+        .stApp { background: var(--background-color); color: var(--text-color); }
         .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 1400px; }
-        h1, h2, h3 { color: #172B4D; }
-        .metric-card { background: #172B4D; color: white; padding: 1rem; border-radius: 0.35rem; }
-        div[data-testid="stTabs"] button[aria-selected="true"] { color: #287D78; border-bottom-color: #287D78; }
-        div[data-testid="stExpander"] { border-color: #D9EAE5; }
+        h1, h2, h3, p, label { color: var(--text-color); }
+        .metric-card { background: #172B4D; color: #FFFFFF; padding: 1rem; border-radius: 0.5rem; }
+        .metric-card h3, .metric-card h2 { color: #FFFFFF; }
+        div[data-testid="stExpander"] { border-color: var(--border-color, rgba(128, 128, 128, 0.35)); }
     </style>
     """,
     unsafe_allow_html=True,
@@ -440,18 +440,15 @@ def summarize_gender_category_profiles(profiles, feature, grouped):
 def _gam_plot_layout(fig, title, x_title, y_title):
     fig.update_layout(
         title=title,
-        template="plotly_white",
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
-        font={"color": "#172B4D", "size": 13},
+        font={"size": 13},
         margin={"l": 55, "r": 25, "t": 60, "b": 55},
         legend={"orientation": "h", "y": -0.22},
         xaxis_title=x_title,
         yaxis_title=y_title,
         hovermode="closest",
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#E7ECEA")
-    fig.update_yaxes(showgrid=True, gridcolor="#E7ECEA")
+    fig.update_xaxes(showgrid=True)
+    fig.update_yaxes(showgrid=True)
     return fig
 
 
@@ -582,7 +579,7 @@ def render_gam_gallery(effects, gender_predictions):
                 customdata=np.column_stack([curve["lower"], curve["upper"]]),
                 hovertemplate=f"{gender}<br>Value: %{{x:.2f}}<br>Contribution: ₹%{{y:,.0f}}<br>95% interval: ₹%{{customdata[0]:,.0f}} to ₹%{{customdata[1]:,.0f}}<extra></extra>",
             ))
-        fig.add_hline(y=0, line_color="#172B4D", line_width=1)
+        fig.add_hline(y=0, line_width=1, line_dash="dot")
         _gam_plot_layout(fig, f"Adjusted {feature.lower()} pattern by gender", feature, "Smooth-term contribution (₹)")
         graphs.append({"key": feature.lower().replace(" ", "_"), "title": f"{feature} pattern", "subtitle": "Does the modelled contribution change across this value?", "figure": fig, "explanation": _smooth_explanation(feature_df, feature)})
 
@@ -668,7 +665,7 @@ if active_section == "EDA":
         "This dashboard combines exploratory data analysis with a generalized additive model to explain "
         "how earnings vary across age, education, gender, employment status, occupation, and industry."
     )
-    st.markdown(f"<p style='font-size:1.02rem; color:#213a5b; margin-top:1rem;'>{overview_text}</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='font-size:1.02rem; color:var(--text-color); margin-top:1rem;'>{overview_text}</p>", unsafe_allow_html=True)
     st.subheader("Project summary")
     st.markdown(
         "- EDA explores the raw patterns in the dataset and helps identify where salary gaps are strongest.\n"

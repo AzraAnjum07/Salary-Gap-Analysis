@@ -1,0 +1,77 @@
+{
+  "gender": {
+    "1": "Male",
+    "2": "Female",
+    "3": "Other"
+  },
+  "marital_status": {
+    "1": "Never Married",
+    "2": "Married",
+    "3": "Widowed",
+    "4": "Divorced",
+    "5": "Separated"
+  },
+  "education_level": {
+    "1": "Not Literate",
+    "2": "Literate Without Formal Schooling",
+    "3": "Below Primary",
+    "4": "Primary",
+    "5": "Middle",
+    "6": "Matric/10th",
+    "7": "Higher Secondary/12th",
+    "8": "Diploma/Certificate",
+    "10": "Graduate",
+    "11": "Post Graduate",
+    "12": "Other Education",
+    "13": "Technical Education"
+  },
+  "employment_status": {
+    "11": "Self-employed (Own Account)",
+    "12": "Self-employed (Employer)",
+    "21": "Regular Salaried/Wage",
+    "31": "Casual Wage (Non-Agri)",
+    "41": "Casual Wage (Agriculture)",
+    "51": "Unpaid Family Worker",
+    "81": "Domestic Worker",
+    "91": "Not in Labour - Student",
+    "92": "Not in Labour - Domestic",
+    "93": "Not in Labour - Disabled/Ill",
+    "94": "Not in Labour - Old Age",
+    "95": "Not in Labour - Other",
+    "97": "Not in Labour - Unspecified"
+  },
+  "occupation": {
+    "611": "General Farming",
+    "522": "Retail Trade Workers",
+    "832": "Helpers & Labourers (Manufacturing)",
+    "612": "Vegetable & Crop Farming",
+    "112": "Corporate Managers",
+    "753": "Machinery Mechanics",
+    "613": "Fruit Farming",
+    "911": "Cleaners & Helpers (Agriculture)",
+    "541": "Personal Care Workers",
+    "234": "Accountants",
+    "932": "Food Preparation Assistants",
+    "411": "Office Clerks",
+    "731": "Welders & Flame Cutters",
+    "833": "Drivers & Mobile Plant Operators",
+    "723": "Electricians"
+  },
+  "industry": {
+    "1": "Agriculture, Forestry & Fishing",
+    "10": "Food Product Manufacturing",
+    "13": "Textile Manufacturing",
+    "18": "Printing",
+    "20": "Chemical Manufacturing",
+    "25": "Fabricated Metal Products",
+    "28": "Machinery Manufacturing",
+    "41": "Electricity, Gas & Water Supply",
+    "45": "Construction",
+    "47": "Retail Trade",
+    "52": "Warehouse & Support",
+    "56": "Food & Beverage Service",
+    "69": "Legal & Accounting",
+    "84": "Government & Defence",
+    "85": "Education"
+  }
+}

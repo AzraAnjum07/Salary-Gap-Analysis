@@ -306,9 +306,9 @@ def _render_upload_gam_gallery(model, currency_label):
             first, last = float(np.mean(vals[:quarter])), float(np.mean(vals[-quarter:]))
             direction = "higher" if last > first else "lower" if last < first else "about the same"
             explanations.append(f"The {group} contribution is {direction} at the high end than at the low end: about {currency_label} {first:,.0f} versus {currency_label} {last:,.0f}, averaged over the first and last quarters of this graph.")
-        fig.add_hline(y=0, line_color="#172B4D", line_width=1)
+        fig.add_hline(y=0, line_width=1, line_dash="dot")
         curve_min, curve_max = float(np.min(curves["Male"]["x"])), float(np.max(curves["Male"]["x"]))
-        fig.update_layout(title=f"How {column} relates to fitted earnings", xaxis_title=column, yaxis_title=f"Smooth contribution ({currency_label})", template="plotly_white", height=360, hovermode="closest", legend={"orientation": "h", "y": -0.2}, font={"color": "#172B4D"})
+        fig.update_layout(title=f"How {column} relates to fitted earnings", xaxis_title=column, yaxis_title=f"Smooth contribution ({currency_label})", height=360, hovermode="closest", legend={"orientation": "h", "y": -0.2})
         graphs.append({
             "key": "numeric_" + str(column).replace(" ", "_"), "title": f"{column} smooth pattern", "subtitle": f"Does the modelled {column} contribution rise or fall across its range?", "figure": fig,
             "explanation": [
@@ -337,7 +337,7 @@ def _render_upload_gam_gallery(model, currency_label):
                 hovertemplate="%{customdata[1]}<br>Category: %{customdata[0]}<br>Fitted estimate: " + currency_label + " %{x:,.0f}<extra></extra>",
             ))
         fig.update_yaxes(tickmode="array", tickvals=positions, ticktext=levels, autorange="reversed")
-        fig.update_layout(title=f"Adjusted earnings profiles by {column}", xaxis_title=f"Fitted earnings estimate ({currency_label})", yaxis_title=column, template="plotly_white", height=max(360, 35 * len(values)), hovermode="closest", legend={"orientation": "h", "y": -0.2}, font={"color": "#172B4D"})
+        fig.update_layout(title=f"Adjusted earnings profiles by {column}", xaxis_title=f"Fitted earnings estimate ({currency_label})", yaxis_title=column, height=max(360, 35 * len(values)), hovermode="closest", legend={"orientation": "h", "y": -0.2})
         male_estimates = model["gender_predictions"]["Male"] + values["effect"].to_numpy() - base_effect
         female_estimates = model["gender_predictions"]["Female"] + values["effect"].to_numpy() - base_effect
         high_m = levels[int(np.argmax(male_estimates))]

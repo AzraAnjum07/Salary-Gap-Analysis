@@ -1,7 +1,8 @@
-streamlit
+streamlit>=1.48
 pandas
 numpy
 matplotlib
 seaborn
 scikit-learn
 pygam
+plotly>=5.20

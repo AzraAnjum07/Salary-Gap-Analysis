@@ -32,7 +32,11 @@ CATEGORICAL_FEATURES = {"gender", "employment_status", "industry", "occupation"}
 CV_FOLDS = 5
 CV_MAX_ROWS = 10_000
 RANDOM_STATE = 42
-ARTIFACT_SCHEMA_VERSION = 3
+# Bump this when the dashboard's trusted-result contract changes. The existing
+# version-3 files were produced before the final full training fit was confirmed;
+# version 4 is written only after the current CV + full-fit + untouched-test run
+# reaches its artifact replacement step.
+ARTIFACT_SCHEMA_VERSION = 4
 
 
 def load_and_prepare_data() -> pd.DataFrame:
